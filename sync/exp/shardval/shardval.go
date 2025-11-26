@@ -1,8 +1,10 @@
 package shardval
 
 import (
+	"fmt"
 	"runtime"
 	"sync"
+	"time"
 )
 
 // Value is a sharded value implemented using a [sync.Pool] for per-P locality.
@@ -13,14 +15,27 @@ import (
 type Value[T any] struct {
 	pool sync.Pool
 
-	mu    sync.Mutex // below fields are protected by mu.
-	all   []*T
-	reuse []*shard[T] // GC'd elements, reused if the pool is empty.
+	all  []*T
+	free chan *shard
 }
 
 // shard is an indirection used to detects elements dropped from the pool (via finalizers).
-type shard[T any] struct {
-	val *T
+type shard struct {
+	index int
+}
+
+func NewFixed[T any](size int) *Value[T] {
+	v := &Value[T]{
+		all:  make([]*T, size),
+		free: make(chan *shard, size),
+	}
+	for i := range v.all {
+		v.all[i] = new(T)
+		s := &shard{i}
+		runtime.SetFinalizer(s, v.finalize)
+		v.free <- s
+	}
+	return v
 }
 
 // With runs the given function with exclusive access to the shard.
@@ -32,8 +47,9 @@ type shard[T any] struct {
 func (val *Value[T]) With(fn func(*T)) {
 	s := val.get()
 	defer val.pool.Put(s)
+	defer fmt.Println("put", s.index)
 
-	fn(s.val)
+	fn(val.all[s.index])
 }
 
 // ForEach iterates over all shards.
@@ -41,9 +57,6 @@ func (val *Value[T]) With(fn func(*T)) {
 // If called concurretnly with [With], the same value may be processed by both functions
 // so addititional synchronization within T is required.
 func (val *Value[T]) ForEach(fn func(*T)) {
-	val.mu.Lock()
-	defer val.mu.Unlock()
-
 	for i := range val.all {
 		fn(val.all[i])
 	}
@@ -51,59 +64,36 @@ func (val *Value[T]) ForEach(fn func(*T)) {
 
 // Shards returns the number of shards.
 func (val *Value[T]) Shards() int {
-	val.mu.Lock()
-	defer val.mu.Unlock()
-
 	return len(val.all)
 }
 
-func (val *Value[T]) get() *shard[T] {
-	s, ok := val.pool.Get().(*shard[T])
-	if ok {
-		return s
+func (val *Value[T]) get() *shard {
+	// Keep trying till we get a free one..
+	for {
+		s, ok := val.pool.Get().(*shard)
+		if ok {
+			fmt.Println("from pool", s.index)
+			return s
+		}
+
+		select {
+		case s := <-val.free:
+			fmt.Println("from free", s.index)
+			return s
+		default:
+			// fmt.Println("no free, retry")
+			// try in a bit
+			time.Sleep(time.Millisecond)
+		}
 	}
-
-	val.mu.Lock()
-	defer val.mu.Unlock()
-
-	// The lock may take time, so check if there's a free shard again.
-	s, ok = val.pool.Get().(*shard[T])
-	if ok {
-		return s
-	}
-
-	if s, ok := val.reuseLocked(); ok {
-		return s
-	}
-
-	s = val.newLocked()
-	return s
 }
 
-func (val *Value[T]) reuseLocked() (*shard[T], bool) {
-	if len(val.reuse) == 0 {
-		return nil, false
+func (val *Value[T]) finalize(s *shard) {
+	fmt.Println("finalizer", s.index)
+	select {
+	case val.free <- s:
+		runtime.SetFinalizer(s, val.finalize)
+	default:
+		panic("finalize culdn't put free chan")
 	}
-
-	s := val.reuse[0]
-	val.reuse[0] = nil
-	val.reuse = val.reuse[1:]
-	return s, true
-}
-
-func (val *Value[T]) newLocked() *shard[T] {
-	s := &shard[T]{
-		val: new(T),
-	}
-	val.all = append(val.all, s.val)
-	runtime.SetFinalizer(s, val.finalize)
-	return s
-}
-
-func (val *Value[T]) finalize(s *shard[T]) {
-	val.mu.Lock()
-	defer val.mu.Unlock()
-
-	val.reuse = append(val.reuse, s)
-	runtime.SetFinalizer(s, val.finalize)
 }

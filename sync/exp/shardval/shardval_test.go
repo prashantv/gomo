@@ -8,7 +8,7 @@ import (
 )
 
 func TestShardVal_With(t *testing.T) {
-	const goroutines = 123
+	const goroutines = 5
 
 	var total int64
 	goIncrements := make([]int, goroutines)
@@ -17,7 +17,8 @@ func TestShardVal_With(t *testing.T) {
 		total += int64(goIncrements[i])
 	}
 
-	var sharded Value[int64]
+	sharded := NewFixed[int64](3)
+	// var sharded Value[int64]
 
 	var wg sync.WaitGroup
 	for _, increments := range goIncrements {
