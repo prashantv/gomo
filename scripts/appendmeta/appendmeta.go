@@ -9,7 +9,7 @@ import (
 
 const find = "<head>"
 const append = `
-<meta name="go-import" content="go.prashantv.com/ git https://github.com/prashantv/go">
+<meta name="go-import" content="gomo.prashantv.com/ git https://github.com/prashantv/go">
 `
 
 func main() {
