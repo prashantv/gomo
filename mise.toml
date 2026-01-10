@@ -4,7 +4,7 @@ lockfile = true
 
 [tools]
 doc2go = "latest"
-go = "1.24"
+go = "1.25"
 golangci-lint = "latest"
 
 [alias]
